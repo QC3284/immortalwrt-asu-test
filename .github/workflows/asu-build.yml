@@ -1,0 +1,78 @@
+name: asu-build
+run-name: asu-${{ inputs.request_hash }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_hash:
+        description: 请求哈希（用于轮询定位）
+        required: true
+      version:
+        description: 版本
+        required: true
+        default: "24.10.0"
+      target:
+        description: 目标平台（如 x86/64）
+        required: true
+        default: "x86/64"
+      profile:
+        description: 设备 profile
+        required: true
+        default: "generic"
+      packages:
+        description: 额外软件包（空格分隔）
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: 记录开始时间
+        run: echo "START=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: 下载 ImageBuilder
+        run: |
+          set -euo pipefail
+          V="${{ inputs.version }}"
+          T="${{ inputs.target }}"
+          BASE="https://downloads.immortalwrt.org/releases/$V/targets/$T"
+          echo "BASE=$BASE"
+          curl -sSL --max-time 120 "$BASE/" -o index.html
+          IB=$(grep -oE 'immortalwrt-imagebuilder-[^"<> ]+Linux-x86_64\.tar\.(xz|zst)' index.html | head -1)
+          echo "IB=$IB"
+          test -n "$IB"
+          curl -sSL --max-time 900 -o ib.tar "$BASE/$IB"
+          ls -la ib.tar
+          mkdir -p ib
+          tar -xf ib.tar -C ib --strip-components=1
+          ls ib | head
+
+      - name: 构建镜像
+        run: |
+          set -euo pipefail
+          cd ib
+          make image PROFILE="${{ inputs.profile }}" PACKAGES="${{ inputs.packages }}" -j"$(nproc)" 2>&1 | tail -50
+
+      - name: 列出产物
+        run: |
+          find ib/bin/targets -type f 2>/dev/null | head -30
+          du -sh ib/bin/targets 2>/dev/null || true
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: images-${{ inputs.request_hash }}
+          path: ib/bin/targets/**/*
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: 汇总耗时
+        if: always()
+        run: |
+          END=$(date +%s)
+          echo "### 构建耗时 $((END-START)) 秒" >> "$GITHUB_STEP_SUMMARY"

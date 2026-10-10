@@ -9,6 +9,7 @@ on:
       target:       {description: 目标平台, required: true, default: "x86/64"}
       profile:      {description: 设备 profile, required: true, default: "generic"}
       packages:     {description: 额外软件包, required: false, default: ""}
+      defaults:     {description: uci-defaults 脚本, required: false, default: ""}
 
 permissions:
   contents: write
@@ -76,11 +77,27 @@ jobs:
           ls -la ib.tar
           mkdir -p ib && tar -xf ib.tar -C ib --strip-components=1
 
+      - name: 准备 uci-defaults（首次启动脚本）
+        run: |
+          set -euo pipefail
+          D='${{ inputs.defaults }}'
+          if [ -n "$D" ]; then
+            mkdir -p asu-files/etc/uci-defaults
+            printf '%s\n' "$D" > asu-files/etc/uci-defaults/99-asu-defaults
+            chmod +x asu-files/etc/uci-defaults/99-asu-defaults
+            echo '已写入 uci-defaults:'
+            head -5 asu-files/etc/uci-defaults/99-asu-defaults
+          else
+            echo '未提供 defaults，跳过'
+          fi
+
       - name: 构建镜像
         run: |
           set -euo pipefail
           cd ib
-          make image PROFILE='${{ inputs.profile }}' PACKAGES='${{ inputs.packages }}' -j"$(nproc)" 2>&1 | tee /tmp/build.log | tail -60
+          EXTRA=''
+          if [ -d asu-files ]; then EXTRA='FILES=asu-files'; fi
+          make image PROFILE='${{ inputs.profile }}' PACKAGES='${{ inputs.packages }}' $EXTRA -j"$(nproc)" 2>&1 | tee /tmp/build.log | tail -60
 
       - name: 收集产物
         run: |

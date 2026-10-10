@@ -10,7 +10,7 @@ on:
       version:
         description: 版本
         required: true
-        default: "24.10.0"
+        default: "24.10.6"
       target:
         description: 目标平台（如 x86/64）
         required: true
@@ -32,8 +32,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
+      - name: 释放磁盘空间
+        run: |
+          set -x
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+                      "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune -af || true
+          df -h /
+
       - name: 记录开始时间
         run: echo "START=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: 缓存 ImageBuilder 压缩包
+        id: ibcache
+        uses: actions/cache@v4
+        with:
+          path: ib.tar
+          key: ib-${{ inputs.version }}-${{ inputs.target }}
 
       - name: 下载 ImageBuilder
         run: |
@@ -42,11 +58,15 @@ jobs:
           T="${{ inputs.target }}"
           BASE="https://downloads.immortalwrt.org/releases/$V/targets/$T"
           echo "BASE=$BASE"
-          curl -sSL --max-time 120 "$BASE/" -o index.html
-          IB=$(grep -oE 'immortalwrt-imagebuilder-[^"<> ]+Linux-x86_64\.tar\.(xz|zst)' index.html | head -1)
-          echo "IB=$IB"
-          test -n "$IB"
-          curl -sSL --max-time 900 -o ib.tar "$BASE/$IB"
+          if [ -s ib.tar ]; then
+            echo "命中缓存，跳过下载"
+          else
+            curl -sSL --max-time 120 "$BASE/" -o index.html
+            IB=$(grep -oE 'immortalwrt-imagebuilder-[^\"<> ]+Linux-x86_64\.tar\.(xz|zst)' index.html | head -1)
+            echo "IB=$IB"
+            test -n "$IB"
+            curl -sSL --max-time 900 -o ib.tar "$BASE/$IB"
+          fi
           ls -la ib.tar
           mkdir -p ib
           tar -xf ib.tar -C ib --strip-components=1
@@ -56,23 +76,49 @@ jobs:
         run: |
           set -euo pipefail
           cd ib
-          make image PROFILE="${{ inputs.profile }}" PACKAGES="${{ inputs.packages }}" -j"$(nproc)" 2>&1 | tail -50
+          df -h /
+          make image PROFILE="${{ inputs.profile }}" PACKAGES="${{ inputs.packages }}" -j"$(nproc)" 2>&1 | tail -60
+          df -h /
 
-      - name: 列出产物
+      - name: 收集产物并输出结果行
+        id: collect
         run: |
-          find ib/bin/targets -type f 2>/dev/null | head -30
-          du -sh ib/bin/targets 2>/dev/null || true
+          set -euo pipefail
+          END=$(date +%s)
+          ELAPSED=$((END-START))
+          echo "耗时 ${ELAPSED}s"
+          find ib/bin/targets -type f | head -40
+          du -sh ib/bin/targets || true
+          python3 - <<'PY' > /tmp/result.json
+          import json, os, hashlib, time
+          root = 'ib/bin/targets'
+          imgs = []
+          for dp, dn, fn in os.walk(root):
+              for f in fn:
+                  p = os.path.join(dp, f)
+                  sz = os.path.getsize(p)
+                  try:
+                      h = hashlib.sha256(open(p,'rb').read()).hexdigest()
+                  except Exception:
+                      h = ''
+                  imgs.append({'name': os.path.relpath(p, root), 'size': sz, 'sha256': h})
+          print(json.dumps({'images': imgs, 'count': len(imgs)}))
+          PY
+          cat /tmp/result.json
+          echo "RESULT_JSON=$(cat /tmp/result.json | head -c 4000)" >> "$GITHUB_ENV"
+          echo "ELAPSED=${ELAPSED}" >> "$GITHUB_ENV"
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
           name: images-${{ inputs.request_hash }}
           path: ib/bin/targets/**/*
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 3
 
-      - name: 汇总耗时
+      - name: 结果摘要
         if: always()
         run: |
-          END=$(date +%s)
-          echo "### 构建耗时 $((END-START)) 秒" >> "$GITHUB_STEP_SUMMARY"
+          echo "### 结果" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 耗时: ${ELAPSED:-?} 秒" >> "$GITHUB_STEP_SUMMARY"
+          echo '- `${{ env.RESULT_JSON }}`' >> "$GITHUB_STEP_SUMMARY"

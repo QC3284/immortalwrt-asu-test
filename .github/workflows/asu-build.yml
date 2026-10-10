@@ -14,6 +14,7 @@ on:
       filesystem:   {description: 文件系统(ext4/jffs2), required: false, default: ""}
       repositories:    {description: 自定义软件源(JSON), required: false, default: ""}
       repository_keys: {description: 自定义源签名密钥(JSON), required: false, default: ""}
+      runtime_mirror:  {description: "运行时镜像代号 ustc/nju/zju/pku/tuna/hit/tencent", required: false, default: ""}
 
 permissions:
   contents: write
@@ -35,6 +36,7 @@ jobs:
       FILESYSTEM: ${{ inputs.filesystem }}
       REPOSITORIES: ${{ inputs.repositories }}
       REPOSITORY_KEYS: ${{ inputs.repository_keys }}
+      RUNTIME_MIRROR: ${{ inputs.runtime_mirror }}
     steps:
       - name: 检出仓库
         uses: actions/checkout@v7
@@ -185,6 +187,68 @@ jobs:
                   (kd / ('custom-%d.pub' % i)).write_text(str(k) + chr(10))
                   print('  + key %d' % i)
           PYREPO
+
+      - name: 应用运行时镜像（如果有）
+        run: |
+          set -euo pipefail
+          python3 - <<'PYMIRROR'
+          import json, os, pathlib
+          code = os.environ.get('RUNTIME_MIRROR','').strip().lower()
+          if not code:
+              print('未选择运行时镜像，跳过')
+              raise SystemExit(0)
+          # ★ 只改【设备端】的 feeds 文件 ✗ 构建时仍走官方 CDN ✗
+          #   这样构建不减速 ✗ 而设备在国内装包时走镜像 ✗ 快得多 ✓
+          MIRRORS = {
+              'ustc':    'https://mirrors.ustc.edu.cn/immortalwrt',
+              'nju':     'https://mirrors.nju.edu.cn/immortalwrt',
+              'zju':     'https://mirrors.zju.edu.cn/immortalwrt',
+              'pku':     'https://mirrors.pku.edu.cn/immortalwrt',
+              # ★ 实测只有这 4 个站【有 immortalwrt】镜像 ✗
+              #   tuna / hit / tencent 只有 openwrt ✗ 本站构建的是 ImmortalWrt ✗ 用不上 ✓
+          }
+          base = MIRRORS.get(code)
+          if not base:
+              print('未知镜像代号:', code, '-> 跳过')
+              raise SystemExit(0)
+          ver = os.environ.get('VERSION','')
+          tgt = os.environ.get('TARGET','')
+          pj = pathlib.Path('ib/profiles.json')
+          arch = ''
+          if pj.exists():
+              try: arch = json.loads(pj.read_text()).get('arch_packages') or ''
+              except Exception: pass
+          if not arch:
+              print('取不到 arch_packages -> 跳过')
+              raise SystemExit(0)
+          apk_mode = ver.upper() == 'SNAPSHOT' or ver.startswith('25.')
+          if apk_mode:
+            rep = 'snapshots' if ver.upper() == 'SNAPSHOT' else ('releases/' + ver)
+          else:
+            rep = 'releases/' + ver
+          prefix = '%s/%s' % (base, rep)
+          urls = [
+              '%s/targets/%s/packages' % (prefix, tgt),
+              '%s/packages/%s/base' % (prefix, arch),
+              '%s/packages/%s/luci' % (prefix, arch),
+              '%s/packages/%s/packages' % (prefix, arch),
+              '%s/packages/%s/routing' % (prefix, arch),
+              '%s/packages/%s/telephony' % (prefix, arch),
+          ]
+          if apk_mode:
+              d = pathlib.Path('ib/asu-files/etc/apk/repositories.d')
+              d.mkdir(parents=True, exist_ok=True)
+              (d / 'distfeeds.list').write_text(chr(10).join(urls) + chr(10))
+              print('已写 apk feeds:', d / 'distfeeds.list')
+          else:
+              d = pathlib.Path('ib/asu-files/etc/opkg')
+              d.mkdir(parents=True, exist_ok=True)
+              names = ['core', 'base', 'luci', 'packages', 'routing', 'telephony']
+              lines = ['src/gz immortalwrt_%s %s' % (nm, u) for nm, u in zip(names, urls)]
+              (d / 'distfeeds.conf').write_text(chr(10).join(lines) + chr(10))
+              print('已写 opkg feeds:', d / 'distfeeds.conf')
+          for u in urls: print('  ', u)
+          PYMIRROR
 
       - name: 构建镜像
         run: |

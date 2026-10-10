@@ -41,6 +41,12 @@ jobs:
           sudo docker image prune -af || true
           df -h /
 
+      - name: 安装 ImageBuilder 依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-utils
+          qemu-img --version
+
       - name: 记录开始时间
         run: echo "START=$(date +%s)" >> "$GITHUB_ENV"
 

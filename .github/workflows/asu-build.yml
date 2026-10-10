@@ -12,6 +12,8 @@ on:
       defaults:     {description: uci-defaults 脚本, required: false, default: ""}
       rootfs_size_mb: {description: rootfs 分区大小(MB), required: false, default: ""}
       filesystem:   {description: 文件系统(ext4/jffs2), required: false, default: ""}
+      repositories:    {description: 自定义软件源(JSON), required: false, default: ""}
+      repository_keys: {description: 自定义源签名密钥(JSON), required: false, default: ""}
 
 permissions:
   contents: write
@@ -31,6 +33,8 @@ jobs:
       DEFAULTS_USED: ${{ inputs.defaults }}
       ROOTFS_SIZE_MB: ${{ inputs.rootfs_size_mb }}
       FILESYSTEM: ${{ inputs.filesystem }}
+      REPOSITORIES: ${{ inputs.repositories }}
+      REPOSITORY_KEYS: ${{ inputs.repository_keys }}
     steps:
       - name: 检出仓库
         uses: actions/checkout@v7
@@ -137,6 +141,50 @@ jobs:
           else
             echo '未提供 defaults，跳过'
           fi
+
+      - name: 写入自定义软件源（如果有）
+        run: |
+          set -euo pipefail
+          python3 - <<'PYREPO'
+          import json, os, pathlib
+          ib = pathlib.Path('ib')
+          repos, keys = {}, []
+          try:
+              r = os.environ.get('REPOSITORIES','').strip()
+              if r: repos = json.loads(r) or {}
+          except Exception as e:
+              print('repositories 解析失败:', e)
+          try:
+              k = os.environ.get('REPOSITORY_KEYS','').strip()
+              if k: keys = json.loads(k) or []
+          except Exception as e:
+              print('repository_keys 解析失败:', e)
+          if not repos and not keys:
+              print('没有自定义源，跳过')
+              raise SystemExit(0)
+          ver = os.environ.get('VERSION','')
+          apk_mode = ver.upper() == 'SNAPSHOT' or ver.startswith('25.')
+          fn = 'repositories' if apk_mode else 'repositories.conf'
+          f = ib / fn
+          base = f.read_text() if f.exists() else ''
+          lines = [l for l in base.splitlines() if l.strip()]
+          for name, url in sorted(repos.items()):
+              lines.append(url if apk_mode else ('src/gz %s %s' % (name, url)))
+              print('  + %s -> %s' % (name, url))
+          if not apk_mode:
+              if not any('src imagebuilder file:packages' in l for l in lines):
+                  lines.append('src imagebuilder file:packages')
+              if not any('check_signature' in l for l in lines):
+                  lines.append('option check_signature')
+          f.write_text(chr(10).join(lines) + chr(10))
+          print('已写入', f)
+          if keys:
+              kd = ib / 'keys'
+              kd.mkdir(exist_ok=True)
+              for i, k in enumerate(keys):
+                  (kd / ('custom-%d.pub' % i)).write_text(str(k) + chr(10))
+                  print('  + key %d' % i)
+          PYREPO
 
       - name: 构建镜像
         run: |

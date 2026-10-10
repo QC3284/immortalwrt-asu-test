@@ -10,6 +10,8 @@ on:
       profile:      {description: 设备 profile, required: true, default: "generic"}
       packages:     {description: 额外软件包, required: false, default: ""}
       defaults:     {description: uci-defaults 脚本, required: false, default: ""}
+      rootfs_size_mb: {description: rootfs 分区大小(MB), required: false, default: ""}
+      filesystem:   {description: 文件系统(ext4/jffs2), required: false, default: ""}
 
 permissions:
   contents: write
@@ -137,10 +139,17 @@ jobs:
           set -euo pipefail
           cd ib
           EXTRA=''
+          # 官方 build.py: ROOTFS_PARTSIZE / ROOTFS_FILESYSTEM
+          ROOTFS_ARGS=''
+          RS='${{ inputs.rootfs_size_mb }}'
+          FS='${{ inputs.filesystem }}'
+          [ -n "$RS" ] && ROOTFS_ARGS="$ROOTFS_ARGS ROOTFS_PARTSIZE=$RS"
+          [ -n "$FS" ] && ROOTFS_ARGS="$ROOTFS_ARGS ROOTFS_FILESYSTEM=$FS"
+          echo "ROOTFS_ARGS=$ROOTFS_ARGS"
           if [ -d asu-files ]; then EXTRA='FILES=asu-files'; fi
           PKGHASH="${PKG_HASH:0:12}"
           echo "EXTRA=$EXTRA  EXTRA_IMAGE_NAME=$PKGHASH"
-          make image PROFILE='${{ inputs.profile }}' PACKAGES='${{ inputs.packages }}' EXTRA_IMAGE_NAME="$PKGHASH" $EXTRA -j"$(nproc)" 2>&1 | tee /tmp/build.log | tail -60
+          make image PROFILE='${{ inputs.profile }}' PACKAGES='${{ inputs.packages }}' EXTRA_IMAGE_NAME="$PKGHASH" $EXTRA $ROOTFS_ARGS -j"$(nproc)" 2>&1 | tee /tmp/build.log | tail -60
 
       - name: 收集产物
         run: |

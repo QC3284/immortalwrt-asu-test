@@ -41,17 +41,20 @@ jobs:
           sudo docker image prune -af || true
           df -h /
 
-      - name: 安装 ImageBuilder 依赖
+      - name: 安装 ImageBuilder 依赖（照 immortalwrt/asu 的 Containerfile.ib）
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            build-essential file gawk gettext libncurses-dev libssl-dev \
-            python3 qemu-utils genisoimage dosfstools mtools \
-            unzip wget rsync xsltproc zlib1g-dev
+            build-essential ccache clang cpio curl file g++-multilib gawk \
+            gcc-multilib genisoimage gettext git libdw-dev libelf-dev \
+            libncurses-dev locales pv pwgen python3 python3-pip \
+            qemu-utils rsync signify-openbsd subversion sudo swig unzip \
+            wget zlib1g-dev zstd dosfstools mtools
           echo "--- 校验关键工具 ---"
-          for t in qemu-img genisoimage mkfs.vfat mcopy gawk; do
-            printf '%-14s ' "$t"; command -v "$t" || echo "缺失"
+          for t in qemu-img genisoimage mkfs.vfat mcopy gawk zstd signify-openbsd; do
+            printf '%-16s ' "$t"; command -v "$t" || echo "缺失"
           done
+
 
 
       - name: 记录开始时间

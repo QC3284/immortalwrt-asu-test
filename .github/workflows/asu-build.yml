@@ -27,6 +27,10 @@ jobs:
       VERSION: ${{ inputs.version }}
       TARGET: ${{ inputs.target }}
       PROFILE: ${{ inputs.profile }}
+      PACKAGES: ${{ inputs.packages }}
+      DEFAULTS_USED: ${{ inputs.defaults }}
+      ROOTFS_SIZE_MB: ${{ inputs.rootfs_size_mb }}
+      FILESYSTEM: ${{ inputs.filesystem }}
     steps:
       - name: 检出仓库
         uses: actions/checkout@v7
@@ -39,7 +43,7 @@ jobs:
         run: |
           set -euo pipefail
           cat > /tmp/queued.json <<JSONEOF
-          {"status":"queued","request_hash":"$RHASH","version":"$VERSION","target":"$TARGET","profile":"$PROFILE"}
+          {"status":"queued","request_hash":"$RHASH","version":"$VERSION","target":"$TARGET","profile":"$PROFILE","packages":"$PACKAGES"}
           JSONEOF
           cat /tmp/queued.json; echo
           if gh release view "$REL" >/dev/null 2>&1; then
@@ -186,6 +190,10 @@ jobs:
                             'version':os.environ.get('VERSION',''),
                   'target':os.environ.get('TARGET',''),
                   'profile':os.environ.get('PROFILE',''),
+                  'packages':os.environ.get('PACKAGES',''),
+                  'defaults_used':bool(os.environ.get('DEFAULTS_USED','')),
+                  'rootfs_size_mb':os.environ.get('ROOTFS_SIZE_MB',''),
+                  'filesystem':os.environ.get('FILESYSTEM',''),
                   'elapsed':os.environ.get('ELAPSED',''),
                             'images':imgs,'count':len(imgs)}, ensure_ascii=False))
           PY
@@ -202,6 +210,6 @@ jobs:
           log = ''
           try: log = open('/tmp/tail.txt', encoding='utf-8', errors='ignore').read()[:2500]
           except Exception: pass
-          print(json.dumps({'status':'failed','request_hash':os.environ.get('RHASH',''),'version':os.environ.get('VERSION',''),'target':os.environ.get('TARGET',''),'profile':os.environ.get('PROFILE',''),'buildlog':log}, ensure_ascii=False))
+          print(json.dumps({'status':'failed','request_hash':os.environ.get('RHASH',''),'version':os.environ.get('VERSION',''),'target':os.environ.get('TARGET',''),'profile':os.environ.get('PROFILE',''),'packages':os.environ.get('PACKAGES',''),'buildlog':log}, ensure_ascii=False))
           PY
           gh release edit "$REL" --notes-file /tmp/failed.json || true

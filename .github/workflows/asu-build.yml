@@ -33,16 +33,6 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
           sudo docker image prune -af || true
           df -h /
-
-      - name: 安装 ImageBuilder 依赖（照 immortalwrt/asu 的 Containerfile.ib）
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq build-essential ccache clang cpio curl file g++-multilib gawk gcc-multilib genisoimage gettext git libdw-dev libelf-dev libncurses-dev locales pv pwgen python3 python3-pip qemu-utils rsync signify-openbsd subversion sudo swig unzip wget zlib1g-dev zstd dosfstools mtools
-          for t in qemu-img genisoimage mkfs.vfat mcopy gawk zstd; do printf '%-16s ' "$t"; command -v "$t" || echo 缺失; done
-
-
-      - name: 记录开始时间
-        run: echo "START=$(date +%s)" >> "$GITHUB_ENV"
       - name: 创建 Release（先置为 queued）
         run: |
           set -euo pipefail
@@ -57,6 +47,16 @@ jobs:
             gh release create "$REL" --title "ASU $VERSION $TARGET $PROFILE" --notes-file /tmp/queued.json --latest=false
           fi
           gh release view "$REL" --json tagName --jq .tagName
+
+      - name: 安装 ImageBuilder 依赖（照 immortalwrt/asu 的 Containerfile.ib）
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential ccache clang cpio curl file g++-multilib gawk gcc-multilib genisoimage gettext git libdw-dev libelf-dev libncurses-dev locales pv pwgen python3 python3-pip qemu-utils rsync signify-openbsd subversion sudo swig unzip wget zlib1g-dev zstd dosfstools mtools
+          for t in qemu-img genisoimage mkfs.vfat mcopy gawk zstd; do printf '%-16s ' "$t"; command -v "$t" || echo 缺失; done
+
+
+      - name: 记录开始时间
+        run: echo "START=$(date +%s)" >> "$GITHUB_ENV"
       - name: 缓存 ImageBuilder 压缩包
         uses: actions/cache@v4
         with:
@@ -181,7 +181,7 @@ jobs:
           gh release view "$REL" --json url --jq .url
 
       - name: 失败时写入 failed 状态
-        if: failure()
+        if: failure() || cancelled()
         continue-on-error: true
         run: |
           tail -150 /tmp/build.log 2>/dev/null | head -c 2500 > /tmp/tail.txt || true

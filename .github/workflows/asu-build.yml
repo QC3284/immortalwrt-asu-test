@@ -21,7 +21,12 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REL: asu-${{ inputs.request_hash }}
       RHASH: ${{ inputs.request_hash }}
+      VERSION: ${{ inputs.version }}
+      TARGET: ${{ inputs.target }}
+      PROFILE: ${{ inputs.profile }}
     steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
       - name: 释放磁盘空间
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
@@ -40,10 +45,17 @@ jobs:
       - name: 创建 Release（先置为 queued）
         run: |
           set -euo pipefail
-          printf '%s' '{"status":"queued","request_hash":"'"$RHASH"'","version":"'${{ inputs.version }}'","target":"'${{ inputs.target }}'","profile":"'${{ inputs.profile }}'"}' > /tmp/queued.json
-          gh release create "$REL" --title "ASU ${{ inputs.version }} ${{ inputs.target }} ${{ inputs.profile }}" --notes-file /tmp/queued.json --latest=false || echo 'release 可能已存在'
+          cat > /tmp/queued.json <<JSONEOF
+          {"status":"queued","request_hash":"$RHASH","version":"$VERSION","target":"$TARGET","profile":"$PROFILE"}
+          JSONEOF
+          cat /tmp/queued.json; echo
+          if gh release view "$REL" >/dev/null 2>&1; then
+            echo Release 已存在，仅更新状态
+            gh release edit "$REL" --notes-file /tmp/queued.json
+          else
+            gh release create "$REL" --title "ASU $VERSION $TARGET $PROFILE" --notes-file /tmp/queued.json --latest=false
+          fi
           gh release view "$REL" --json tagName --jq .tagName
-
       - name: 缓存 ImageBuilder 压缩包
         uses: actions/cache@v4
         with:

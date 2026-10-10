@@ -85,7 +85,24 @@ jobs:
             echo 'make manifest 失败'; tail -40 /tmp/manifest.err; exit 1; }
           echo "manifest 行数: $(wc -l < /tmp/manifest.txt)"
           head -3 /tmp/manifest.txt
-          python3 /tmp/parse_manifest.py
+          python3 - <<'PYMANIFEST'
+          import hashlib
+          txt = open('/tmp/manifest.txt').read()
+          sep = ' - ' if ' - ' in txt else ' '
+          m = {}
+          for line in txt.splitlines():
+              line = line.strip()
+              if not line:
+                  continue
+              parts = line.split(sep, 1)
+              if len(parts) == 2:
+                  m[parts[0].strip()] = parts[1].strip()
+          names = sorted(set(k.removeprefix('+') for k in m))
+          h = hashlib.sha256(' '.join(names).encode('utf-8')).hexdigest()
+          open('/tmp/pkg_hash.txt','w').write(h)
+          print('包数量=%d  packages_hash=%s' % (len(names), h))
+          print('EXTRA_IMAGE_NAME =', h[:12])
+          PYMANIFEST
           echo "PKG_HASH=$(cat /tmp/pkg_hash.txt)" >> "$GITHUB_ENV"
 
       - name: x86 特判：关掉多余镜像格式

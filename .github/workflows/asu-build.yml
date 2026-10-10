@@ -183,7 +183,10 @@ jobs:
           imgs = json.load(open('/tmp/result.json'))['images']
           for i in imgs: i['asset'] = i['name'].split('/')[-1]
           print(json.dumps({'status':'complete','request_hash':os.environ.get('RHASH',''),
-                            'version':os.environ.get('VERSION',''), 'elapsed':os.environ.get('ELAPSED',''),
+                            'version':os.environ.get('VERSION',''),
+                  'target':os.environ.get('TARGET',''),
+                  'profile':os.environ.get('PROFILE',''),
+                  'elapsed':os.environ.get('ELAPSED',''),
                             'images':imgs,'count':len(imgs)}, ensure_ascii=False))
           PY
           gh release edit "$REL" --notes-file /tmp/status.json
@@ -199,6 +202,6 @@ jobs:
           log = ''
           try: log = open('/tmp/tail.txt', encoding='utf-8', errors='ignore').read()[:2500]
           except Exception: pass
-          print(json.dumps({'status':'failed','request_hash':os.environ.get('RHASH',''),'buildlog':log}, ensure_ascii=False))
+          print(json.dumps({'status':'failed','request_hash':os.environ.get('RHASH',''),'version':os.environ.get('VERSION',''),'target':os.environ.get('TARGET',''),'profile':os.environ.get('PROFILE',''),'buildlog':log}, ensure_ascii=False))
           PY
           gh release edit "$REL" --notes-file /tmp/failed.json || true

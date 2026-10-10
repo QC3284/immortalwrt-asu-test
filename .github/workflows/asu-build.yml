@@ -1,33 +1,19 @@
 name: asu-build
 run-name: asu-${{ inputs.request_hash }}
-true:
+
+on:
   workflow_dispatch:
     inputs:
-      request_hash:
-        description: 请求哈希
-        required: true
-      version:
-        description: 版本
-        required: true
-        default: 24.10.6
-      target:
-        description: 目标平台
-        required: true
-        default: x86/64
-      profile:
-        description: 设备 profile
-        required: true
-        default: generic
-      packages:
-        description: 额外软件包
-        required: false
-        default: ''
-      defaults:
-        description: uci-defaults 脚本
-        required: false
-        default: ''
+      request_hash: {description: 请求哈希, required: true}
+      version:      {description: 版本, required: true, default: "24.10.6"}
+      target:       {description: 目标平台, required: true, default: "x86/64"}
+      profile:      {description: 设备 profile, required: true, default: "generic"}
+      packages:     {description: 额外软件包, required: false, default: ""}
+      defaults:     {description: uci-defaults 脚本, required: false, default: ""}
+
 permissions:
   contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -40,79 +26,153 @@ jobs:
       TARGET: ${{ inputs.target }}
       PROFILE: ${{ inputs.profile }}
     steps:
-    - name: 检出仓库
-      uses: actions/checkout@v4
-    - name: 释放磁盘空间
-      run: 'sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+      - name: 检出仓库
+        uses: actions/checkout@v4
+      - name: 释放磁盘空间
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo docker image prune -af || true
+          df -h /
 
-        sudo docker image prune -af || true
+      - name: 安装 ImageBuilder 依赖（照 immortalwrt/asu 的 Containerfile.ib）
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential ccache clang cpio curl file g++-multilib gawk gcc-multilib genisoimage gettext git libdw-dev libelf-dev libncurses-dev locales pv pwgen python3 python3-pip qemu-utils rsync signify-openbsd subversion sudo swig unzip wget zlib1g-dev zstd dosfstools mtools
+          for t in qemu-img genisoimage mkfs.vfat mcopy gawk zstd; do printf '%-16s ' "$t"; command -v "$t" || echo 缺失; done
 
-        df -h /
 
-        '
-    - name: 安装 ImageBuilder 依赖（照 immortalwrt/asu 的 Containerfile.ib）
-      run: 'sudo apt-get update -qq
+      - name: 记录开始时间
+        run: echo "START=$(date +%s)" >> "$GITHUB_ENV"
+      - name: 创建 Release（先置为 queued）
+        run: |
+          set -euo pipefail
+          cat > /tmp/queued.json <<JSONEOF
+          {"status":"queued","request_hash":"$RHASH","version":"$VERSION","target":"$TARGET","profile":"$PROFILE"}
+          JSONEOF
+          cat /tmp/queued.json; echo
+          if gh release view "$REL" >/dev/null 2>&1; then
+            echo Release 已存在，仅更新状态
+            gh release edit "$REL" --notes-file /tmp/queued.json
+          else
+            gh release create "$REL" --title "ASU $VERSION $TARGET $PROFILE" --notes-file /tmp/queued.json --latest=false
+          fi
+          gh release view "$REL" --json tagName --jq .tagName
+      - name: 缓存 ImageBuilder 压缩包
+        uses: actions/cache@v4
+        with:
+          path: ib.tar
+          key: ib-${{ inputs.version }}-${{ inputs.target }}
 
-        sudo apt-get install -y -qq build-essential ccache clang cpio curl file g++-multilib gawk gcc-multilib genisoimage gettext git libdw-dev libelf-dev libncurses-dev locales pv pwgen python3 python3-pip qemu-utils rsync signify-openbsd subversion sudo swig unzip wget zlib1g-dev zstd dosfstools mtools
+      - name: 下载 ImageBuilder
+        run: |
+          set -euo pipefail
+          V='${{ inputs.version }}'; T='${{ inputs.target }}'
+          BASE="https://downloads.immortalwrt.org/releases/$V/targets/$T"
+          if [ -s ib.tar ]; then echo 命中缓存; else
+            curl -sSL --max-time 120 "$BASE/" -o index.html
+            IB=$(grep -oE 'immortalwrt-imagebuilder-[^"<> ]+Linux-x86_64\.tar\.(xz|zst)' index.html | head -1)
+            test -n "$IB"; echo "IB=$IB"
+            curl -sSL --max-time 900 -o ib.tar "$BASE/$IB"
+          fi
+          ls -la ib.tar
+          mkdir -p ib && tar -xf ib.tar -C ib --strip-components=1
 
-        for t in qemu-img genisoimage mkfs.vfat mcopy gawk zstd; do printf ''%-16s '' "$t"; command -v "$t" || echo 缺失; done
+      - name: 解析包清单（照官方先跑 make manifest）
+        run: |
+          set -euo pipefail
+          cd ib
+          make manifest PROFILE='${{ inputs.profile }}' PACKAGES='${{ inputs.packages }}' STRIP_ABI=1 > /tmp/manifest.txt 2>/tmp/manifest.err || {
+            echo 'make manifest 失败'; tail -40 /tmp/manifest.err; exit 1; }
+          echo "manifest 行数: $(wc -l < /tmp/manifest.txt)"
+          head -3 /tmp/manifest.txt
+          python3 /tmp/parse_manifest.py
+          echo "PKG_HASH=$(cat /tmp/pkg_hash.txt)" >> "$GITHUB_ENV"
 
-        '
-    - name: 记录开始时间
-      run: echo "START=$(date +%s)" >> "$GITHUB_ENV"
-    - name: 创建 Release（先置为 queued）
-      run: "set -euo pipefail\ncat > /tmp/queued.json <<JSONEOF\n{\"status\":\"queued\",\"request_hash\":\"$RHASH\",\"version\":\"$VERSION\",\"target\":\"$TARGET\",\"profile\":\"$PROFILE\"}\nJSONEOF\ncat /tmp/queued.json; echo\nif gh release view \"$REL\" >/dev/null 2>&1; then\n  echo Release 已存在，仅更新状态\n  gh release edit \"$REL\" --notes-file /tmp/queued.json\nelse\n  gh release create \"$REL\" --title \"ASU $VERSION $TARGET $PROFILE\" --notes-file /tmp/queued.json --latest=false\nfi\ngh release view \"$REL\" --json tagName --jq .tagName\n"
-    - name: 缓存 ImageBuilder 压缩包
-      uses: actions/cache@v4
-      with:
-        path: ib.tar
-        key: ib-${{ inputs.version }}-${{ inputs.target }}
-    - name: 下载 ImageBuilder
-      run: "set -euo pipefail\nV='${{ inputs.version }}'; T='${{ inputs.target }}'\nBASE=\"https://downloads.immortalwrt.org/releases/$V/targets/$T\"\nif [ -s ib.tar ]; then echo 命中缓存; else\n  curl -sSL --max-time 120 \"$BASE/\" -o index.html\n  IB=$(grep -oE 'immortalwrt-imagebuilder-[^\"<> ]+Linux-x86_64\\.tar\\.(xz|zst)' index.html | head -1)\n  test -n \"$IB\"; echo \"IB=$IB\"\n  curl -sSL --max-time 900 -o ib.tar \"$BASE/$IB\"\nfi\nls -la ib.tar\nmkdir -p ib && tar -xf ib.tar -C ib --strip-components=1\n"
-    - name: 解析包清单（照官方先跑 make manifest）
-      run: "set -euo pipefail\ncd ib\n# 官方 build.py: make manifest PROFILE=... PACKAGES=... STRIP_ABI=1\nmake manifest PROFILE='${{ inputs.profile }}' \\\n  PACKAGES='${{ inputs.packages }}' STRIP_ABI=1 \\\n  > /tmp/manifest.txt 2>/tmp/manifest.err || {\n    echo \"✗ make manifest 失败\"; tail -40 /tmp/manifest.err; exit 1; }\necho \"manifest 行数: $(wc -l < /tmp/manifest.txt)\"\nhead -3 /tmp/manifest.txt\n# 官方 parse_manifest: 有 \" - \" 用 opkg 格式，否则用 apk 格式（空格分隔）\n# 官方 get_packages_hash: sha256( \" \".join(sorted(set(names))) )\npython3 - <<'PYEOF'\nimport hashlib, json\ntxt = open('/tmp/manifest.txt').read()\nsep = ' - ' if ' - ' in txt else ' '\nm = {}\nfor line in txt.splitlines():\n    line = line.strip()\n    if not line: continue\n    parts = line.split(sep, 1)\n    if len(parts) == 2: m[parts[0].strip()] = parts[1].strip()\nnames = sorted(set(k.removeprefix('+') for k in m))\nh = hashlib.sha256(' '.join(names).encode('utf-8')).hexdigest()\nopen('/tmp/pkg_hash.txt','w').write(h)\njson.dump(m, open('/tmp/manifest.json','w'))\nprint('包数量=%d  packages_hash=%s' % (len(names), h))\nprint('EXTRA_IMAGE_NAME 将是:', h[:12])\nPYEOF\necho \"PKG_HASH=$(cat /tmp/pkg_hash.txt)\" >> \"$GITHUB_ENV\""
-    - name: 准备 uci-defaults（首次启动脚本）
-      run: "set -euo pipefail\nD='${{ inputs.defaults }}'\nif [ -n \"$D\" ]; then\n  # ★ FILES= 是相对 ImageBuilder 目录的 ✗ 必须建在 ib/ 内 ✗\n  mkdir -p ib/asu-files/etc/uci-defaults\n  printf '%s\\n' \"$D\" > ib/asu-files/etc/uci-defaults/99-asu-defaults\n  chmod +x ib/asu-files/etc/uci-defaults/99-asu-defaults\n  echo \"已写入 ib/asu-files/etc/uci-defaults/99-asu-defaults:\"\n  head -5 ib/asu-files/etc/uci-defaults/99-asu-defaults\nelse\n  echo '未提供 defaults，跳过'\nfi"
-    - name: x86 特判：关掉多余镜像格式
-      if: startsWith(inputs.target, 'x86/')
-      run: "set -euo pipefail\ncd ib\n# 官方 build.py: 对 x86/* 关闭 ISO/QCOW2/VDI/VMDK/VHDX 以减少构建时间\nsed -i \\\n  -e 's|CONFIG_ISO_IMAGES=y|# CONFIG_ISO_IMAGES is not set|g' \\\n  -e 's|CONFIG_QCOW2_IMAGES=y|# CONFIG_QCOW2_IMAGES is not set|g' \\\n  -e 's|CONFIG_VDI_IMAGES=y|# CONFIG_VDI_IMAGES is not set|g' \\\n  -e 's|CONFIG_VMDK_IMAGES=y|# CONFIG_VMDK_IMAGES is not set|g' \\\n  -e 's|CONFIG_VHDX_IMAGES=y|# CONFIG_VHDX_IMAGES is not set|g' \\\n  .config\necho '已关闭多余格式:'; grep -E 'ISO_IMAGES|QCOW2_IMAGES|VDI_IMAGES|VMDK_IMAGES|VHDX_IMAGES' .config || true"
-    - name: 构建镜像
-      run: "set -euo pipefail\ncd ib\nEXTRA=''\n[ -d asu-files ] && EXTRA=\"FILES=asu-files\"      # 现在路径对了 ✓\nPKGHASH=\"${PKG_HASH:0:12}\"                        # 官方 EXTRA_IMAGE_NAME=packages_hash[:12]\necho \"EXTRA=$EXTRA  EXTRA_IMAGE_NAME=$PKGHASH\"\nmake image PROFILE='${{ inputs.profile }}' PACKAGES='${{ inputs.packages }}' \\\n  EXTRA_IMAGE_NAME=\"$PKGHASH\" $EXTRA -j\"$(nproc)\" 2>&1 | tee /tmp/build.log | tail -60"
-    - name: 收集产物
-      run: "set -euo pipefail\nEND=$(date +%s); ELAPSED=$((END-START)); echo \"耗时 $ELAPSED 秒\"; echo \"ELAPSED=$ELAPSED\" >> \"$GITHUB_ENV\"\nfind ib/bin/targets -type f | head -40\npython3 - <<'PY' > /tmp/result.json\nimport json, os, hashlib\nroot='ib/bin/targets'; imgs=[]\nfor dp,dn,fn in os.walk(root):\n    for f in fn:\n        p=os.path.join(dp,f)\n        imgs.append({'name': os.path.relpath(p,root), 'size': os.path.getsize(p), 'sha256': hashlib.sha256(open(p,'rb').read()).hexdigest()})\nprint(json.dumps({'images': imgs, 'count': len(imgs)}))\nPY\nhead -c 300 /tmp/result.json; echo\n"
-    - name: 上传产物到 Release
-      run: 'set -euo pipefail
+      - name: x86 特判：关掉多余镜像格式
+        if: startsWith(inputs.target, 'x86/')
+        run: |
+          set -euo pipefail
+          cd ib
+          sed -i -e 's|CONFIG_ISO_IMAGES=y|# CONFIG_ISO_IMAGES is not set|g' \\
+                 -e 's|CONFIG_QCOW2_IMAGES=y|# CONFIG_QCOW2_IMAGES is not set|g' \\
+                 -e 's|CONFIG_VDI_IMAGES=y|# CONFIG_VDI_IMAGES is not set|g' \\
+                 -e 's|CONFIG_VMDK_IMAGES=y|# CONFIG_VMDK_IMAGES is not set|g' \\
+                 -e 's|CONFIG_VHDX_IMAGES=y|# CONFIG_VHDX_IMAGES is not set|g' \\
+                 .config
+          grep -E 'ISO_IMAGES|QCOW2_IMAGES|VDI_IMAGES|VMDK_IMAGES|VHDX_IMAGES' .config || true
 
-        cd ib/bin/targets
+      - name: 准备 uci-defaults（首次启动脚本）
+        run: |
+          set -euo pipefail
+          D='${{ inputs.defaults }}'
+          if [ -n "$D" ]; then
+            mkdir -p ib/asu-files/etc/uci-defaults
+            printf '%s\n' "$D" > ib/asu-files/etc/uci-defaults/99-asu-defaults
+            chmod +x ib/asu-files/etc/uci-defaults/99-asu-defaults
+            echo '已写入 uci-defaults:'
+            head -5 ib/asu-files/etc/uci-defaults/99-asu-defaults
+          else
+            echo '未提供 defaults，跳过'
+          fi
 
-        find . -type f -exec gh release upload "$REL" {} --clobber \;
+      - name: 构建镜像
+        run: |
+          set -euo pipefail
+          cd ib
+          EXTRA=''
+          if [ -d asu-files ]; then EXTRA='FILES=asu-files'; fi
+          PKGHASH="${PKG_HASH:0:12}"
+          echo "EXTRA=$EXTRA  EXTRA_IMAGE_NAME=$PKGHASH"
+          make image PROFILE='${{ inputs.profile }}' PACKAGES='${{ inputs.packages }}' EXTRA_IMAGE_NAME="$PKGHASH" $EXTRA -j"$(nproc)" 2>&1 | tee /tmp/build.log | tail -60
 
-        cd "$GITHUB_WORKSPACE"
+      - name: 收集产物
+        run: |
+          set -euo pipefail
+          END=$(date +%s); ELAPSED=$((END-START)); echo "耗时 $ELAPSED 秒"; echo "ELAPSED=$ELAPSED" >> "$GITHUB_ENV"
+          find ib/bin/targets -type f | head -40
+          python3 - <<'PY' > /tmp/result.json
+          import json, os, hashlib
+          root='ib/bin/targets'; imgs=[]
+          for dp,dn,fn in os.walk(root):
+              for f in fn:
+                  p=os.path.join(dp,f)
+                  imgs.append({'name': os.path.relpath(p,root), 'size': os.path.getsize(p), 'sha256': hashlib.sha256(open(p,'rb').read()).hexdigest()})
+          print(json.dumps({'images': imgs, 'count': len(imgs)}))
+          PY
+          head -c 300 /tmp/result.json; echo
 
-        gh release view "$REL" --json assets --jq ''.assets[].name'' | head -20
+      - name: 上传产物到 Release
+        run: |
+          set -euo pipefail
+          cd ib/bin/targets
+          find . -type f -exec gh release upload "$REL" {} --clobber \;
+          cd "$GITHUB_WORKSPACE"
+          gh release view "$REL" --json assets --jq '.assets[].name' | head -20
 
-        '
-    - name: 更新状态为 complete
-      run: "set -euo pipefail\npython3 - <<'PY' > /tmp/status.json\nimport json, os\nimgs = json.load(open('/tmp/result.json'))['images']\nfor i in imgs: i['asset'] = i['name'].split('/')[-1]\nprint(json.dumps({'status':'complete','request_hash':os.environ.get('RHASH',''),\n                  'version':os.environ.get('VERSION',''), 'elapsed':os.environ.get('ELAPSED',''),\n                  'images':imgs,'count':len(imgs)}, ensure_ascii=False))\nPY\ngh release edit \"$REL\" --notes-file /tmp/status.json\ngh release view \"$REL\" --json url --jq .url\n"
-    - name: 失败时写入 failed 状态
-      if: failure()
-      continue-on-error: true
-      run: 'tail -150 /tmp/build.log 2>/dev/null | head -c 2500 > /tmp/tail.txt || true
+      - name: 更新状态为 complete
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > /tmp/status.json
+          import json, os
+          imgs = json.load(open('/tmp/result.json'))['images']
+          for i in imgs: i['asset'] = i['name'].split('/')[-1]
+          print(json.dumps({'status':'complete','request_hash':os.environ.get('RHASH',''),
+                            'version':os.environ.get('VERSION',''), 'elapsed':os.environ.get('ELAPSED',''),
+                            'images':imgs,'count':len(imgs)}, ensure_ascii=False))
+          PY
+          gh release edit "$REL" --notes-file /tmp/status.json
+          gh release view "$REL" --json url --jq .url
 
-        python3 - <<''PY'' > /tmp/failed.json
-
-        import json, os
-
-        log = ''''
-
-        try: log = open(''/tmp/tail.txt'', encoding=''utf-8'', errors=''ignore'').read()[:2500]
-
-        except Exception: pass
-
-        print(json.dumps({''status'':''failed'',''request_hash'':os.environ.get(''RHASH'',''''),''buildlog'':log}, ensure_ascii=False))
-
-        PY
-
-        gh release edit "$REL" --notes-file /tmp/failed.json || true
-
-        '
+      - name: 失败时写入 failed 状态
+        if: failure()
+        continue-on-error: true
+        run: |
+          tail -150 /tmp/build.log 2>/dev/null | head -c 2500 > /tmp/tail.txt || true
+          python3 - <<'PY' > /tmp/failed.json
+          import json, os
+          log = ''
+          try: log = open('/tmp/tail.txt', encoding='utf-8', errors='ignore').read()[:2500]
+          except Exception: pass
+          print(json.dumps({'status':'failed','request_hash':os.environ.get('RHASH',''),'buildlog':log}, ensure_ascii=False))
+          PY
+          gh release edit "$REL" --notes-file /tmp/failed.json || true

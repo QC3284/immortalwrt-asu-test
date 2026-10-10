@@ -39,9 +39,9 @@ jobs:
           sudo apt-get install -y -qq build-essential ccache clang cpio curl file g++-multilib gawk gcc-multilib genisoimage gettext git libdw-dev libelf-dev libncurses-dev locales pv pwgen python3 python3-pip qemu-utils rsync signify-openbsd subversion sudo swig unzip wget zlib1g-dev zstd dosfstools mtools
           for t in qemu-img genisoimage mkfs.vfat mcopy gawk zstd; do printf '%-16s ' "$t"; command -v "$t" || echo 缺失; done
 
+
       - name: 记录开始时间
         run: echo "START=$(date +%s)" >> "$GITHUB_ENV"
-
       - name: 创建 Release（先置为 queued）
         run: |
           set -euo pipefail
@@ -114,7 +114,7 @@ jobs:
           imgs = json.load(open('/tmp/result.json'))['images']
           for i in imgs: i['asset'] = i['name'].split('/')[-1]
           print(json.dumps({'status':'complete','request_hash':os.environ.get('RHASH',''),
-                            'version':os.environ.get('V',''), 'elapsed':os.environ.get('ELAPSED',''),
+                            'version':os.environ.get('VERSION',''), 'elapsed':os.environ.get('ELAPSED',''),
                             'images':imgs,'count':len(imgs)}, ensure_ascii=False))
           PY
           gh release edit "$REL" --notes-file /tmp/status.json

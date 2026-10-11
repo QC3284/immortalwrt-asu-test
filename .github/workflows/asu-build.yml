@@ -42,8 +42,27 @@ jobs:
         uses: actions/checkout@v7
       - name: 释放磁盘空间
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
-          sudo docker image prune -af || true
+          # ★ 2026-10-11 实测（6 次成功构建的均值）:
+          #   这一步占整个构建的 42% —— 均值 112s，范围 66~152s
+          #   而清理后 /dev/root 有 106G 可用，构建本身只用几十 MB 到几 GB，
+          #   历史日志里 0 次磁盘/空间报错。清掉的 20 多 GB 用不上。
+          #   → 先看可用空间：够用就整个跳过；不够才照旧清理（不会引入 ENOSPC 风险）
+          AVAIL_GB=$(df --output=avail -BG / | tail -1 | tr -dc '0-9')
+          echo "清理前 / 可用空间: ${AVAIL_GB}G"
+          if [ -z "$AVAIL_GB" ]; then
+            echo "无法解析可用空间，保守起见执行清理"
+            NEED_CLEAN=1
+          elif [ "$AVAIL_GB" -ge 40 ]; then
+            echo "空间充足（>= 40G），跳过清理"
+            NEED_CLEAN=0
+          else
+            echo "空间不足（< 40G），执行清理"
+            NEED_CLEAN=1
+          fi
+          if [ "$NEED_CLEAN" = "1" ]; then
+            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+            sudo docker image prune -af || true
+          fi
           df -h /
       - name: 创建 Release（先置为 queued）
         run: |
